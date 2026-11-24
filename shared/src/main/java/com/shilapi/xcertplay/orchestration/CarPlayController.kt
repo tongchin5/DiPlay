@@ -68,6 +68,10 @@ import com.shilapi.xcertplay.transport.BluetoothAdapterProof
 import com.shilapi.xcertplay.transport.BluetoothLinkCheck
 import com.shilapi.xcertplay.transport.BluetoothRadioCheck
 import com.shilapi.xcertplay.transport.BluetoothRfcommDuplexStream
+import com.shilapi.xcertplay.transport.BluetoothRfcommSocketAccess
+import com.shilapi.xcertplay.transport.EcarxE02BluetoothLinkProvider
+import com.shilapi.xcertplay.transport.EcarxE02BluetoothProtocol
+import com.shilapi.xcertplay.transport.WirelessBluetoothLinkProvider
 import com.shilapi.xcertplay.transport.Ch341DeviceMatcher
 import com.shilapi.xcertplay.transport.Ch341I2cTransport
 import com.shilapi.xcertplay.transport.Ch341UsbHost
@@ -199,6 +203,20 @@ class CarPlayController(
     private val locationProvider: Iap2LocationProvider? = null,
     private val vehicleStatusProvider: com.shilapi.xcertplay.transport.VehicleStatusProvider? = null,
 ) : Closeable {
+    internal constructor(
+        context: Context,
+        config: CarPlayRuntimeConfig,
+        airPlayConfig: AirPlayConfig,
+        identity: AirPlayIdentity,
+        pairings: PairingStore,
+        listener: AirPlaySessionListener,
+        media: AirPlayMediaHandler,
+        reportStatus: (CarPlayStatus) -> Unit,
+        wirelessBluetoothLinkProvider: WirelessBluetoothLinkProvider,
+    ) : this(context, config, airPlayConfig, identity, pairings, listener, media, reportStatus) {
+        this.wirelessBluetoothLinkProvider = wirelessBluetoothLinkProvider
+    }
+
     /** Wired restarts must not claim the iPhone while this controller still owns USB work. */
     val isWiredTransport: Boolean get() = config.transport == CarPlayTransport.WIRED
 
@@ -212,8 +230,18 @@ class CarPlayController(
     }
 
     private enum class Phase { IDLE, MFI, WIRELESS, IPHONE, REENUMERATION, DATAPATHS, CONTROL }
+    private data class WirelessBluetoothSelection(
+        val address: String,
+        val name: String?,
+        val hostBluetoothMac: String,
+        val androidDevice: BluetoothDevice?,
+    )
+
 
     private val appContext = context.applicationContext
+    @Volatile private var wirelessBluetoothLinkProvider =
+        EcarxE02BluetoothLinkProvider.createIfSupported(appContext)
+
     val diagnosticAttempt = diagnosticAttempts.incrementAndGet()
     private val diagnosticRun = AtomicInteger()
     private val usbManager: UsbManager? = context.getSystemService(UsbManager::class.java)
@@ -1469,17 +1497,28 @@ class CarPlayController(
             firstTcpWatchdog = watchdog
             val mfi = mfiSession?.client
                 ?: throw IOException("MFi coprocessor client is unavailable")
-            // Wireless CarPlay begins over Bluetooth: a radio that is off is found before the Wi-Fi is changed.
-            val initialAdapter = currentBluetoothAdapter()
-            if (initialAdapter != null && initialAdapter.state == BluetoothAdapter.STATE_TURNING_ON) {
-                awaitBluetoothEnabled(initialAdapter, timeoutMillis = 3_000L)
+            val vendorProvider = wirelessBluetoothLinkProvider
+            val vendorBluetooth = vendorProvider?.let { provider ->
+                onStatus(CarPlayStatus.WaitingForPairedIphone)
+                val phone = provider.selectPhone(config.wirelessBluetoothDeviceAddress)
+                val localAddress = provider.localAddress()
+                debugLog("wireless selected ECarX vendor Bluetooth phone")
+                onStatus(CarPlayStatus.StartingHotspot)
+                phone to localAddress
             }
-            val activeAdapter = currentBluetoothAdapter()
-            BluetoothRadioCheck.blockerForState(
-                adapterPresent = activeAdapter != null,
-                state = activeAdapter?.state,
-                pausedByDiPlay = BydBluetoothSuspend.isSuspendedByUs(appContext),
-            )?.let { throw BluetoothRadioCheck.failure(it) }
+            if (vendorProvider == null) {
+                // Wireless CarPlay begins over Bluetooth: a radio that is off is found before the Wi-Fi is changed.
+                val initialAdapter = currentBluetoothAdapter()
+                if (initialAdapter != null && initialAdapter.state == BluetoothAdapter.STATE_TURNING_ON) {
+                    awaitBluetoothEnabled(initialAdapter, timeoutMillis = 3_000L)
+                }
+                val activeAdapter = currentBluetoothAdapter()
+                BluetoothRadioCheck.blockerForState(
+                    adapterPresent = activeAdapter != null,
+                    state = activeAdapter?.state,
+                    pausedByDiPlay = BydBluetoothSuspend.isSuspendedByUs(appContext),
+                )?.let { throw BluetoothRadioCheck.failure(it) }
+            }
             val hotspotInfo = startWirelessHotspot(generation)
             if (isStaleWirelessRun(generation)) {
                 return
@@ -1557,26 +1596,43 @@ class CarPlayController(
                     backend = hotspotInfo.backend.label,
                 ),
             )
-            onStatus(CarPlayStatus.WaitingForPairedIphone)
-
-            val adapter = currentBluetoothAdapter()
-                ?: throw BluetoothRadioCheck.failure(BluetoothRadioCheck.NO_ADAPTER)
-            val bluetoothRecoveryComplete = BydBluetoothSuspend.resumeAndWait(appContext, adapter)
-            if (adapter.state == BluetoothAdapter.STATE_TURNING_ON) {
-                awaitBluetoothEnabled(adapter, timeoutMillis = 3_000L)
+            if (vendorProvider == null) onStatus(CarPlayStatus.WaitingForPairedIphone)
+            val bluetoothSelection = if (vendorBluetooth != null) {
+                WirelessBluetoothSelection(
+                    address = vendorBluetooth.first.address,
+                    name = vendorBluetooth.first.name,
+                    hostBluetoothMac = vendorBluetooth.second,
+                    androidDevice = null,
+                )
+            } else {
+                val adapter = currentBluetoothAdapter()
+                    ?: throw BluetoothRadioCheck.failure(BluetoothRadioCheck.NO_ADAPTER)
+                val bluetoothRecoveryComplete = BydBluetoothSuspend.resumeAndWait(appContext, adapter)
+                if (adapter.state == BluetoothAdapter.STATE_TURNING_ON) {
+                    awaitBluetoothEnabled(adapter, timeoutMillis = 3_000L)
+                }
+                if (!adapter.isEnabled) throw IOException(BluetoothRadioCheck.RADIO_OFF)
+                if (!bluetoothRecoveryComplete) throw IOException("Bluetooth recovery did not complete before the handshake")
+                val device = selectWirelessBluetoothDevice(adapter)
+                WirelessBluetoothSelection(
+                    address = device.address,
+                    name = device.name,
+                    hostBluetoothMac = accessoryBluetoothMac(adapter),
+                    androidDevice = device,
+                )
             }
-            if (!adapter.isEnabled) throw IOException(BluetoothRadioCheck.RADIO_OFF)
-            if (!bluetoothRecoveryComplete) throw IOException("Bluetooth recovery did not complete before the handshake")
-            val device = selectWirelessBluetoothDevice(adapter)
-            wirelessIphoneAddress = device.address
-            val hostBluetoothMac = accessoryBluetoothMac(adapter)
-            debugLog(
-                "wireless selected Bluetooth target name=${device.name ?: "unknown"} " +
-                    "address=${device.address} localBt=$hostBluetoothMac",
-            )
+            wirelessIphoneAddress = bluetoothSelection.address
+            if (vendorBluetooth == null) {
+                debugLog(
+                    "wireless selected Bluetooth target name=${bluetoothSelection.name ?: "unknown"} " +
+                        "address=${bluetoothSelection.address} localBt=${bluetoothSelection.hostBluetoothMac}",
+                )
+            } else {
+                debugLog("wireless selected ECarX vendor Bluetooth phone")
+            }
             val wirelessAirPlayConfig = airPlayConfig.copy(
                 deviceId = deviceIdentifier,
-                btMac = hostBluetoothMac,
+                btMac = bluetoothSelection.hostBluetoothMac,
             )
 
             onStatus(CarPlayStatus.AttachingNetwork)
@@ -1662,54 +1718,79 @@ class CarPlayController(
             }
 
             onStatus(CarPlayStatus.ConnectingBluetooth)
-            debugLog(
-                "wireless RFCOMM connecting address=${device.address} " +
-                    "uuid=$IAP2_IPHONE_UUID",
-            )
-            val socket = synchronized(wirelessResourceLock) {
-                if (isStaleWirelessRun(generation)) return
-                device.createRfcommSocketToServiceRecord(UUID.fromString(IAP2_IPHONE_UUID))
-                    .also { bluetoothSocket = it }
-            }
-            logBluetoothConnectionSnapshot(device, "before-connect")
-            val bluetoothStarted = System.nanoTime()
-            val bluetoothConnectMillis: Long
-            try {
-                connectBluetoothSocket(socket, device.address)
-                bluetoothConnectMillis = elapsedMillis(bluetoothStarted)
-                connectionDiagnostic("Bluetooth connect completed elapsedMs=$bluetoothConnectMillis " +
-                    "socketReportedConnected=${runCatching { socket.isConnected }.getOrNull() ?: "unknown"}")
-            } catch (error: Throwable) {
-                connectionDiagnostic(
-                    "Bluetooth connect failed elapsedMs=${elapsedMillis(bluetoothStarted)} " +
-                        "failureClass=${diagnosticFailureClass(error)}",
-                )
-                logBluetoothConnectionSnapshot(device, "after-failure")
-                throw error
-            }
-            debugLog("wireless RFCOMM connected address=${device.address}")
-            logBluetoothConnectionSnapshot(device, "after-connect")
-            if (isStaleWirelessRun(generation)) {
-                return
-            }
-            val bluetoothAdapterKey = BluetoothAdapterProof.key(Build.BOARD, hostBluetoothMac)
-            val stream = synchronized(wirelessResourceLock) {
-                if (isStaleWirelessRun(generation)) return
+            val stream = if (vendorProvider != null) {
+                val phone = vendorBluetooth?.first ?: throw IOException("ECarX Bluetooth phone selection is unavailable")
+                val link = vendorProvider.open(phone, ::connectionDiagnostic)
+                if (isStaleWirelessRun(generation)) {
+                    link.close()
+                    return
+                }
+                synchronized(wirelessResourceLock) {
+                    if (isStaleWirelessRun(generation)) {
+                        link.close()
+                        return@synchronized null
+                    }
+                    try {
+                        BluetoothRfcommDuplexStream(
+                            object : BluetoothRfcommSocketAccess {
+                                override fun inputStream() = link.input
+                                override fun outputStream() = link.output
+                                override fun close() = link.close()
+                            },
+                            ::connectionDiagnostic,
+                        ).also { bluetoothStream = it }
+                    } catch (error: Throwable) {
+                        runCatching { link.close() }
+                        throw error
+                    }
+                } ?: return
+            } else {
+                val device = bluetoothSelection.androidDevice
+                    ?: throw IOException("Android Bluetooth phone selection is unavailable")
+                debugLog("wireless RFCOMM connecting address=${device.address} uuid=$IAP2_IPHONE_UUID")
+                val socket = synchronized(wirelessResourceLock) {
+                    if (isStaleWirelessRun(generation)) return
+                    device.createRfcommSocketToServiceRecord(UUID.fromString(IAP2_IPHONE_UUID))
+                        .also { bluetoothSocket = it }
+                }
+                logBluetoothConnectionSnapshot(device, "before-connect")
+                val bluetoothStarted = System.nanoTime()
+                val bluetoothConnectMillis: Long
                 try {
-                    BluetoothRfcommDuplexStream(socket, ::connectionDiagnostic) {
-                        recordBluetoothAdapterProof(bluetoothAdapterKey)
-                    }.also { bluetoothStream = it }
-                } finally {
-                    // The stream owns the connected socket and also closes it if stream getters
-                    // fail. Do not retain a second socket owner in bootstrap teardown.
-                    if (bluetoothSocket === socket) bluetoothSocket = null
+                    connectBluetoothSocket(socket, device.address)
+                    bluetoothConnectMillis = elapsedMillis(bluetoothStarted)
+                    connectionDiagnostic("Bluetooth connect completed elapsedMs=$bluetoothConnectMillis " +
+                        "socketReportedConnected=${runCatching { socket.isConnected }.getOrNull() ?: "unknown"}")
+                } catch (error: Throwable) {
+                    connectionDiagnostic(
+                        "Bluetooth connect failed elapsedMs=${elapsedMillis(bluetoothStarted)} " +
+                            "failureClass=${diagnosticFailureClass(error)}",
+                    )
+                    logBluetoothConnectionSnapshot(device, "after-failure")
+                    throw error
                 }
-            }
-            if (BluetoothLinkCheck.looksUnreal(bluetoothConnectMillis, 0L)) {
-                InstantBluetoothLink(generation, device, stream, bluetoothConnectMillis, bluetoothAdapterKey).also {
-                    instantBluetoothLink = it
-                    watchForUnrealBluetooth(it)
+                debugLog("wireless RFCOMM connected address=${device.address}")
+                logBluetoothConnectionSnapshot(device, "after-connect")
+                if (isStaleWirelessRun(generation)) return
+                val bluetoothAdapterKey = BluetoothAdapterProof.key(Build.BOARD, bluetoothSelection.hostBluetoothMac)
+                val androidStream = synchronized(wirelessResourceLock) {
+                    if (isStaleWirelessRun(generation)) return
+                    try {
+                        BluetoothRfcommDuplexStream(socket, ::connectionDiagnostic) {
+                            recordBluetoothAdapterProof(bluetoothAdapterKey)
+                        }.also { bluetoothStream = it }
+                    } finally {
+                        // The stream owns the connected socket; bootstrap teardown must not close it twice.
+                        if (bluetoothSocket === socket) bluetoothSocket = null
+                    }
                 }
+                if (BluetoothLinkCheck.looksUnreal(bluetoothConnectMillis, 0L)) {
+                    InstantBluetoothLink(generation, device, androidStream, bluetoothConnectMillis, bluetoothAdapterKey).also {
+                        instantBluetoothLink = it
+                        watchForUnrealBluetooth(it)
+                    }
+                }
+                androidStream
             }
             val channel = Iap2Session.openWireless(
                 stream,
@@ -1728,7 +1809,7 @@ class CarPlayController(
             if (isStaleWirelessRun(generation)) {
                 return
             }
-            val wirelessIdentification = Iap2WirelessIdentification(hostBluetoothMac, hotspotInfo.ssid)
+            val wirelessIdentification = Iap2WirelessIdentification(bluetoothSelection.hostBluetoothMac, hotspotInfo.ssid)
             val bootstrapIdentification = config.identification.forWirelessLink(
                 Iap2WirelessLinkRole.BLUETOOTH_BOOTSTRAP,
                 wirelessIdentification,
@@ -3667,7 +3748,7 @@ class CarPlayController(
         private const val TELEPHONY_HOOK_SWITCH = 1
         private const val TELEPHONY_DROP = 3
         private val diagnosticAttempts = AtomicInteger()
-        private const val IAP2_IPHONE_UUID = "00000000-deca-fade-deca-deafdecacafe"
+        private val IAP2_IPHONE_UUID = EcarxE02BluetoothProtocol.IAP2_UUID
         // BluetoothProfile.A2DP_SINK and HEADSET_CLIENT, hidden from the public SDK.
         private const val PROFILE_A2DP_SINK = 11
         private const val PROFILE_HEADSET_CLIENT = 16

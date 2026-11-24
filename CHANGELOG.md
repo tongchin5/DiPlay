@@ -1,3 +1,7 @@
+# Unreleased
+
+- Add an experimental ECarX E02 IHU524P wireless CarPlay path through the gocsdk vendor Bluetooth stack (#916).
+
 # DiPlay 0.2.22 — 2026-10-28
 
 - Fix the two 0.2.21 regressions: connect wireless CarPlay over the car hotspot again on BYD DiLink 3.0/4.0 and other units where 0.2.21 took a mobile-data interface for the hotspot, and keep wireless music at the iPhone's speed from the first second instead of 1.5 % fast with stutter (#936, #950, #993, #1070, #1080).

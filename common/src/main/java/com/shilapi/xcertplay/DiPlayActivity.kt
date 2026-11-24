@@ -6058,6 +6058,10 @@ class DiPlayActivity : ComponentActivity(), AppAppearanceOwner {
         OwnScreenStart.start(this, CarPlayScreen.intent(this).addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT))
     }
     private fun choosePhone() {
+        com.shilapi.xcertplay.transport.EcarxE02BluetoothLinkProvider.createIfSupported(applicationContext)?.let {
+            chooseEcarxPhone(it)
+            return
+        }
         if (Build.VERSION.SDK_INT >= 31 && checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
             bluetoothPermission.launch(Manifest.permission.BLUETOOTH_CONNECT); return
         }
@@ -6100,6 +6104,47 @@ class DiPlayActivity : ComponentActivity(), AppAppearanceOwner {
                 if (start) connect(true)
             }.setNeutralButton(getString(R.string.pair_another)) { _, _ -> openBluetoothSettings() }
             .setNegativeButton(getString(R.string.cancel)) { _, _ -> pendingWireless = false }.show()
+    }
+    private fun chooseEcarxPhone(provider: com.shilapi.xcertplay.transport.EcarxE02BluetoothLinkProvider) {
+        val preferredAddress = DiPlayPreferences.phoneAddress(this)
+        Thread({
+            val phoneResult = runCatching { provider.pairedPhones(preferredAddress) }
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                val failure = phoneResult.exceptionOrNull()
+                if (failure != null) {
+                    appDialogBuilder().setTitle(getString(R.string.wireless_carplay_2))
+                        .setMessage(failure.message ?: getString(R.string.bluetooth_cannot_open_connections))
+                        .setPositiveButton(getString(R.string.got_it), null)
+                        .setNegativeButton(getString(R.string.cancel)) { _, _ -> pendingWireless = false }
+                        .show()
+                    return@runOnUiThread
+                }
+                val phones = phoneResult.getOrDefault(emptyList())
+                if (phones.isEmpty()) {
+                    appDialogBuilder().setTitle(getString(R.string.pair_your_iphone))
+                        .setMessage(getString(R.string.enable_the_car_s_bluetooth_and_pair_your_iphone_first))
+                        .setPositiveButton(getString(R.string.got_it), null)
+                        .setNegativeButton(getString(R.string.cancel)) { _, _ -> pendingWireless = false }
+                        .show()
+                    return@runOnUiThread
+                }
+                val labels = phones.map { phone ->
+                    val name = phone.name ?: getString(R.string.paired_device)
+                    if (phones.count { it.name == phone.name } > 1) "$name · ${phone.address.takeLast(5)}" else name
+                }
+                appDialogBuilder().setTitle(getString(R.string.choose_your_iphone))
+                    .setItems(labels.toTypedArray()) { _, index ->
+                        val phone = phones[index]
+                        DiPlayPreferences.savePhone(this, phone.address, phone.name ?: "iPhone")
+                        val start = pendingWireless; pendingWireless = false
+                        render()
+                        if (start) connect(true)
+                    }
+                    .setNegativeButton(getString(R.string.cancel)) { _, _ -> pendingWireless = false }
+                    .show()
+            }
+        }, "diplay-e02-phone-list").apply { isDaemon = true; start() }
     }
 
     private fun wirelessHelp() {

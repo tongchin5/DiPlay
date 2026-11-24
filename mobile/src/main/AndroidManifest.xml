@@ -2,6 +2,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <queries>
+        <package android:name="com.nforetek.bt" />
+    </queries>
+
     <application
         android:allowBackup="false"
         android:fullBackupContent="@xml/backup_rules"

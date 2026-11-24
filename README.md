@@ -4,7 +4,7 @@
 
 **CarPlay for compatible BYD Android head units.** Wired and wireless, with the familiar DiAuto interface. Independent app: `com.shihab.diplay`.
 
-> **BYD support scope:** These projects focus on BYD cars. They may work on other brands, but other brands are unsupported and there are no plans to add support or fix brand-specific incompatibilities.
+> **BYD support scope:** These projects focus on BYD cars. Other brands are unsupported; documented experimental model-specific integrations do not imply brand-wide support, and there are no plans for generic support of other brands.
 
 [Download & website](https://shihabal3amri.github.io/DiPlay/) · [Release](https://github.com/shihabal3amri/DiPlay/releases/tag/v0.2.22) · [Report a problem](https://github.com/shihabal3amri/DiPlay/issues/new/choose)
 

@@ -4,7 +4,7 @@
 
 为兼容的比亚迪安卓车机提供有线及无线 CarPlay，采用 DiAuto 风格界面。
 
-> 这些项目专注于比亚迪汽车。它们可能在其他品牌上运行，但其他品牌不在支持范围内，也没有增加支持或修复其品牌特定兼容性问题的计划。
+> 这些项目专注于比亚迪汽车。其他品牌不在一般支持范围内；文档中列出的实验性车型专属整合不代表该品牌整体受支持，也没有为其他品牌增加通用支持的计划。
 
 [下载与中文网站](https://shihabal3amri.github.io/DiPlay/zh-Hans/) · [0.2.22 版本](https://github.com/shihabal3amri/DiPlay/releases/tag/v0.2.22) · [完整说明](README.md) · [报告问题](https://github.com/shihabal3amri/DiPlay/issues/new/choose)
 
