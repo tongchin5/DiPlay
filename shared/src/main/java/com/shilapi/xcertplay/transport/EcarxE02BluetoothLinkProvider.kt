@@ -8,8 +8,8 @@ import android.os.IBinder
 import android.os.RemoteException
 import android.os.SystemClock
 import com.nforetek.bt.aidl.INfCommandBluetooth
-import com.shilapi.xcertplay.network.ConnectionFailureCause
-import com.shilapi.xcertplay.network.ConnectionFailureException
+import com.shilapi.xcertplay.orchestration.ConnectionFailureCause
+import com.shilapi.xcertplay.orchestration.ConnectionFailureException
 import java.io.IOException
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit

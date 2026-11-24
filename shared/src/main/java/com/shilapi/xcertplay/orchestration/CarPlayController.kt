@@ -239,7 +239,7 @@ class CarPlayController(
 
 
     private val appContext = context.applicationContext
-    @Volatile private var wirelessBluetoothLinkProvider =
+    @Volatile private var wirelessBluetoothLinkProvider: WirelessBluetoothLinkProvider? =
         EcarxE02BluetoothLinkProvider.createIfSupported(appContext)
 
     val diagnosticAttempt = diagnosticAttempts.incrementAndGet()

@@ -1,5 +1,7 @@
 package com.nforetek.bt.aidl;
 
+import com.nforetek.bt.aidl.INfCallbackBluetooth;
+
 interface INfCommandBluetooth {
     boolean isBluetoothServiceReady();
     boolean registerBtCallback(INfCallbackBluetooth callback);
