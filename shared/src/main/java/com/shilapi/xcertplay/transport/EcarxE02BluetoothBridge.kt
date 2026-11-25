@@ -2,6 +2,7 @@ package com.shilapi.xcertplay.transport
 
 import android.net.LocalSocket
 import android.net.LocalSocketAddress
+import java.io.File
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
@@ -25,23 +26,27 @@ internal object EcarxE02BluetoothBridge {
         var serialOutput: OutputStream? = null
         var connectAttempted = false
         try {
+            logSocketInventory(onDiagnostic)
             // Android 9's LocalSocket.connect(address, timeout) is a stub that throws
             // UnsupportedOperationException; only the no-timeout overload reaches the socket.
-            serial.connect(LocalSocketAddress("goc_serial", LocalSocketAddress.Namespace.RESERVED))
-            val controlOutput = serial.outputStream
-            serialOutput = controlOutput
-            drainControlSocket(serial.inputStream)
-            connectAttempted = true
-            controlOutput.write(EcarxE02BluetoothProtocol.connectCommand(canonicalAddress).toByteArray(Charsets.US_ASCII))
-            controlOutput.flush()
+            if (connectOptional(serial, "goc_serial", onDiagnostic)) {
+                val controlOutput = serial.outputStream
+                serialOutput = controlOutput
+                drainControlSocket(serial.inputStream)
+                connectAttempted = true
+                controlOutput.write(EcarxE02BluetoothProtocol.connectCommand(canonicalAddress).toByteArray(Charsets.US_ASCII))
+                controlOutput.flush()
+            } else {
+                onDiagnostic("ECarX goc_serial absent; using goc_spp alone")
+            }
 
-            spp.connect(LocalSocketAddress("goc_spp", LocalSocketAddress.Namespace.RESERVED))
+            connectReserved(spp, "goc_spp", onDiagnostic)
             val input = spp.inputStream
             val output = spp.outputStream
             output.write(EcarxE02BluetoothProtocol.socketHandshake(canonicalAddress))
             output.flush()
             runCatching { onDiagnostic("ECarX gocsdk RFCOMM bridge ready") }
-            return Link(canonicalAddress, serial, controlOutput, spp, input, output)
+            return Link(canonicalAddress, serial, serialOutput, spp, input, output)
         } catch (error: Exception) {
             if (connectAttempted) disconnect(serialOutput, canonicalAddress)
             closeQuietly(spp)
@@ -54,6 +59,55 @@ internal object EcarxE02BluetoothBridge {
             }
             throw IOException(detail, error)
         }
+    }
+
+    private fun connectReserved(socket: LocalSocket, name: String, onDiagnostic: (String) -> Unit) {
+        try {
+            socket.connect(LocalSocketAddress(name, LocalSocketAddress.Namespace.RESERVED))
+            onDiagnostic("ECarX $name socket connected")
+        } catch (error: Exception) {
+            onDiagnostic("ECarX $name socket failed: ${error.javaClass.simpleName}: ${error.message}")
+            throw error
+        }
+    }
+
+    /** Some E02 firmware exposes only goc_spp; a missing control socket is not fatal. */
+    private fun connectOptional(socket: LocalSocket, name: String, onDiagnostic: (String) -> Unit): Boolean =
+        try {
+            socket.connect(LocalSocketAddress(name, LocalSocketAddress.Namespace.RESERVED))
+            onDiagnostic("ECarX $name socket connected")
+            true
+        } catch (error: Exception) {
+            onDiagnostic("ECarX $name socket unavailable: ${error.javaClass.simpleName}: ${error.message}")
+            closeQuietly(socket)
+            false
+        }
+
+    /** Once-only evidence for the next report: which vendor node this firmware exposes. */
+    private fun logSocketInventory(onDiagnostic: (String) -> Unit) {
+        runCatching {
+            val all = File("/dev/socket").list().orEmpty()
+            val entries = all.filter { it.contains("goc", ignoreCase = true) }
+            onDiagnostic("ECarX /dev/socket goc entries=$entries all=${all.take(40)}")
+        }.onFailure { onDiagnostic("ECarX /dev/socket unreadable: ${it.javaClass.simpleName}") }
+        runCatching {
+            val entries = File("/dev").list()
+                ?.filter {
+                    it.contains("goc", ignoreCase = true) ||
+                        it.startsWith("stp", ignoreCase = true) ||
+                        it.contains("spp", ignoreCase = true)
+                }
+                .orEmpty()
+            onDiagnostic("ECarX /dev goc/stp/spp entries=$entries")
+        }.onFailure { onDiagnostic("ECarX /dev unreadable: ${it.javaClass.simpleName}") }
+        runCatching {
+            val entries = File("/proc/net/unix").useLines { lines ->
+                lines.filter { it.contains("goc", ignoreCase = true) }.take(10).toList()
+            }
+            onDiagnostic("ECarX /proc/net/unix goc entries=${entries.size} ${entries.joinToString(" | ")}")
+        }.onFailure { onDiagnostic("ECarX /proc/net/unix unreadable: ${it.javaClass.simpleName}") }
+        val serialDevice = File("/dev/goc_serial")
+        onDiagnostic("ECarX /dev/goc_serial exists=${serialDevice.exists()} readable=${serialDevice.canRead()}")
     }
 
     private fun drainControlSocket(input: InputStream) {
@@ -87,7 +141,7 @@ internal object EcarxE02BluetoothBridge {
     private class Link(
         private val address: String,
         private val serial: LocalSocket,
-        private val serialOutput: OutputStream,
+        private val serialOutput: OutputStream?,
         private val spp: LocalSocket,
         override val input: InputStream,
         override val output: OutputStream,
