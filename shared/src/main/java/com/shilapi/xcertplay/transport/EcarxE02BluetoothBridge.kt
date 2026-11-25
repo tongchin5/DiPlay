@@ -10,7 +10,16 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 /** Opens the E02 vendor RFCOMM channel without depending on Android's disabled Bluetooth adapter. */
 internal object EcarxE02BluetoothBridge {
-    private const val CONTROL_BUFFER_BYTES = 1024
+    private const val GOC_SERIAL_PATH = "/data/goc/goc_serial"
+
+    private val CONTROL_ENDPOINTS = listOf(
+        Endpoint(GOC_SERIAL_PATH, LocalSocketAddress.Namespace.FILESYSTEM, GOC_SERIAL_PATH),
+        Endpoint("goc_serial", LocalSocketAddress.Namespace.RESERVED, "goc_serial"),
+    )
+    private val DATA_ENDPOINTS = listOf(
+        Endpoint("goc_spp", LocalSocketAddress.Namespace.RESERVED, "goc_spp"),
+        Endpoint("/data/goc/rfcomm", LocalSocketAddress.Namespace.FILESYSTEM, "/data/goc/rfcomm"),
+    )
 
     fun open(
         address: String,
@@ -21,36 +30,31 @@ internal object EcarxE02BluetoothBridge {
         } catch (error: IllegalArgumentException) {
             throw IOException("ECarX Bluetooth received an invalid phone address", error)
         }
-        val serial = LocalSocket()
-        val spp = LocalSocket()
-        var serialOutput: OutputStream? = null
-        var connectAttempted = false
+        logSocketInventory(onDiagnostic)
+        val control = openControl(onDiagnostic)
+            ?: throw IOException("ECarX gocsdk control channel is unavailable")
+        var commandSent = false
         try {
-            logSocketInventory(onDiagnostic)
-            // Android 9's LocalSocket.connect(address, timeout) is a stub that throws
-            // UnsupportedOperationException; only the no-timeout overload reaches the socket.
-            if (connectOptional(serial, "goc_serial", onDiagnostic)) {
-                val controlOutput = serial.outputStream
-                serialOutput = controlOutput
-                drainControlSocket(serial.inputStream)
-                connectAttempted = true
-                controlOutput.write(EcarxE02BluetoothProtocol.connectCommand(canonicalAddress).toByteArray(Charsets.US_ASCII))
-                controlOutput.flush()
-            } else {
-                onDiagnostic("ECarX goc_serial absent; using goc_spp alone")
-            }
-
-            connectReserved(spp, "goc_spp", onDiagnostic)
+            val data = connectFirst(DATA_ENDPOINTS, onDiagnostic)
+                ?: throw IOException("ECarX gocsdk data socket is unavailable")
+            val spp = data.second
             val input = spp.inputStream
             val output = spp.outputStream
+            // goc_spp clients identify their device before the daemon carries iAP2 bytes.
             output.write(EcarxE02BluetoothProtocol.socketHandshake(canonicalAddress))
             output.flush()
-            runCatching { onDiagnostic("ECarX gocsdk RFCOMM bridge ready") }
-            return Link(canonicalAddress, serial, serialOutput, spp, input, output)
+            onDiagnostic("ECarX address handshake written to ${data.first.label}")
+            control.output.write(
+                EcarxE02BluetoothProtocol.connectCommand(canonicalAddress).toByteArray(Charsets.US_ASCII),
+            )
+            control.output.flush()
+            commandSent = true
+            // iAP2 is accessory-initiated; the caller writes the first identification frame.
+            onDiagnostic("ECarX gocsdk RFCOMM bridge ready")
+            return Link(canonicalAddress, control, spp, input, output)
         } catch (error: Exception) {
-            if (connectAttempted) disconnect(serialOutput, canonicalAddress)
-            closeQuietly(spp)
-            closeQuietly(serial)
+            if (commandSent) disconnect(control.output, canonicalAddress)
+            control.close()
             if (error is InterruptedException) Thread.currentThread().interrupt()
             val detail = if (error is SecurityException) {
                 "ECarX gocsdk socket access was denied"
@@ -61,27 +65,59 @@ internal object EcarxE02BluetoothBridge {
         }
     }
 
-    private fun connectReserved(socket: LocalSocket, name: String, onDiagnostic: (String) -> Unit) {
-        try {
-            socket.connect(LocalSocketAddress(name, LocalSocketAddress.Namespace.RESERVED))
-            onDiagnostic("ECarX $name socket connected")
+    private class ControlChannel(
+        val output: OutputStream,
+        private val closeAction: () -> Unit,
+    ) {
+        fun close() = closeAction()
+    }
+
+    private fun openControl(onDiagnostic: (String) -> Unit): ControlChannel? {
+        val serialFile = File(GOC_SERIAL_PATH)
+        onDiagnostic(
+            "ECarX $GOC_SERIAL_PATH exists=${serialFile.exists()} isFile=${serialFile.isFile} " +
+                "canRead=${serialFile.canRead()} canWrite=${serialFile.canWrite()}",
+        )
+        runCatching {
+            // Write-only: draining the pty would steal the vendor app's command replies.
+            val output = java.io.FileOutputStream(serialFile)
+            onDiagnostic("ECarX $GOC_SERIAL_PATH opened as a device")
+            return ControlChannel(output) {
+                runCatching { output.close() }
+            }
+        }.onFailure {
+            onDiagnostic("ECarX $GOC_SERIAL_PATH open failed: ${it.javaClass.simpleName}: ${it.message}")
+        }
+        val pair = connectFirst(CONTROL_ENDPOINTS, onDiagnostic) ?: return null
+        val socket = pair.second
+        onDiagnostic("ECarX control ${pair.first.label} opened")
+        return ControlChannel(socket.outputStream) { closeQuietly(socket) }
+    }
+
+    private data class Endpoint(
+        val path: String,
+        val namespace: LocalSocketAddress.Namespace,
+        val label: String,
+    )
+
+    private fun connect(endpoint: Endpoint, onDiagnostic: (String) -> Unit): LocalSocket? {
+        val socket = LocalSocket()
+        return try {
+            socket.connect(LocalSocketAddress(endpoint.path, endpoint.namespace))
+            onDiagnostic("ECarX ${endpoint.label} connected")
+            socket
         } catch (error: Exception) {
-            onDiagnostic("ECarX $name socket failed: ${error.javaClass.simpleName}: ${error.message}")
-            throw error
+            onDiagnostic("ECarX ${endpoint.label} unavailable: ${error.javaClass.simpleName}: ${error.message}")
+            closeQuietly(socket)
+            null
         }
     }
 
-    /** Some E02 firmware exposes only goc_spp; a missing control socket is not fatal. */
-    private fun connectOptional(socket: LocalSocket, name: String, onDiagnostic: (String) -> Unit): Boolean =
-        try {
-            socket.connect(LocalSocketAddress(name, LocalSocketAddress.Namespace.RESERVED))
-            onDiagnostic("ECarX $name socket connected")
-            true
-        } catch (error: Exception) {
-            onDiagnostic("ECarX $name socket unavailable: ${error.javaClass.simpleName}: ${error.message}")
-            closeQuietly(socket)
-            false
-        }
+    private fun connectFirst(
+        endpoints: List<Endpoint>,
+        onDiagnostic: (String) -> Unit,
+    ): Pair<Endpoint, LocalSocket>? =
+        endpoints.firstNotNullOfOrNull { endpoint -> connect(endpoint, onDiagnostic)?.let { endpoint to it } }
 
     /** Once-only evidence for the next report: which vendor node this firmware exposes. */
     private fun logSocketInventory(onDiagnostic: (String) -> Unit) {
@@ -108,22 +144,11 @@ internal object EcarxE02BluetoothBridge {
         }.onFailure { onDiagnostic("ECarX /proc/net/unix unreadable: ${it.javaClass.simpleName}") }
         val serialDevice = File("/dev/goc_serial")
         onDiagnostic("ECarX /dev/goc_serial exists=${serialDevice.exists()} readable=${serialDevice.canRead()}")
-    }
-
-    private fun drainControlSocket(input: InputStream) {
-        Thread({
-            val buffer = ByteArray(CONTROL_BUFFER_BYTES)
-            try {
-                while (input.read(buffer) >= 0) {
-                    // Keep control responses off the RFCOMM stream and out of logs.
-                }
-            } catch (_: IOException) {
-                // Closing the control socket ends this reader.
-            }
-        }, "diplay-e02-gocsdk-control").apply {
-            isDaemon = true
-            start()
-        }
+        val gocDirectory = File("/data/goc")
+        onDiagnostic(
+            "ECarX /data/goc exists=${gocDirectory.exists()} readable=${gocDirectory.canRead()} " +
+                "entries=${gocDirectory.list()?.take(20)}",
+        )
     }
 
     private fun disconnect(output: OutputStream?, address: String) {
@@ -140,8 +165,7 @@ internal object EcarxE02BluetoothBridge {
 
     private class Link(
         private val address: String,
-        private val serial: LocalSocket,
-        private val serialOutput: OutputStream?,
+        private val control: ControlChannel,
         private val spp: LocalSocket,
         override val input: InputStream,
         override val output: OutputStream,
@@ -150,9 +174,9 @@ internal object EcarxE02BluetoothBridge {
 
         override fun close() {
             if (!closed.compareAndSet(false, true)) return
-            EcarxE02BluetoothBridge.disconnect(serialOutput, address)
+            EcarxE02BluetoothBridge.disconnect(control.output, address)
             EcarxE02BluetoothBridge.closeQuietly(spp)
-            EcarxE02BluetoothBridge.closeQuietly(serial)
+            control.close()
         }
     }
 }

@@ -7,7 +7,7 @@ import org.junit.Test
 class EcarxE02BluetoothProtocolTest {
     @Test fun connectCommandMatchesTheE02GocsdkFormat() {
         assertEquals(
-            "AT#SP00112233445500000000decafadedecadeafdecacafe\r\n",
+            "AT#SP00112233445500000000-deca-fade-deca-deafdecacafe\r\n",
             EcarxE02BluetoothProtocol.connectCommand("00:11:22:33:44:55"),
         )
     }

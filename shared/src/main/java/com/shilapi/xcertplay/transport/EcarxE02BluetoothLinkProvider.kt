@@ -78,7 +78,12 @@ class EcarxE02BluetoothLinkProvider internal constructor(
         val address = canonicalOrNull(phone.address)
             ?: throw IOException("ECarX Bluetooth received an invalid phone address")
         onDiagnostic("ECarX gocsdk RFCOMM bridge starting")
-        return bridge.open(WirelessBluetoothLinkProvider.Phone(address, phone.name), onDiagnostic)
+        return try {
+            bridge.open(WirelessBluetoothLinkProvider.Phone(address, phone.name), onDiagnostic)
+        } catch (error: Exception) {
+            onDiagnostic("ECarX gocsdk bridge failed: ${error.javaClass.simpleName}: ${error.message}")
+            throw error
+        }
     }
 
     companion object {

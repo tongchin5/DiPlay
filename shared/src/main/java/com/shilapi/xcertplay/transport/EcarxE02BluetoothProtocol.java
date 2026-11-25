@@ -13,9 +13,9 @@ public final class EcarxE02BluetoothProtocol {
 
     private EcarxE02BluetoothProtocol() {}
 
-    /** gocsdk expects AT#SP followed by the compact address and iAP2 UUID. */
+    /** gocsdk expects AT#SP followed by the compact address and the dashed iAP2 UUID. */
     public static String connectCommand(String address) {
-        return "AT#SP" + compactAddress(address) + IAP2_UUID.replace("-", "") + "\r\n";
+        return "AT#SP" + compactAddress(address) + IAP2_UUID + "\r\n";
     }
 
     /** Release the RFCOMM channel when the bootstrap link closes. */
