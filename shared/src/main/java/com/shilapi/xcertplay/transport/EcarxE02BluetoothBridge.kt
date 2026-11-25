@@ -9,7 +9,6 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 /** Opens the E02 vendor RFCOMM channel without depending on Android's disabled Bluetooth adapter. */
 internal object EcarxE02BluetoothBridge {
-    private const val SOCKET_CONNECT_TIMEOUT_MILLIS = 20_000
     private const val CONTROL_BUFFER_BYTES = 1024
 
     fun open(
@@ -26,10 +25,9 @@ internal object EcarxE02BluetoothBridge {
         var serialOutput: OutputStream? = null
         var connectAttempted = false
         try {
-            serial.connect(
-                LocalSocketAddress("goc_serial", LocalSocketAddress.Namespace.RESERVED),
-                SOCKET_CONNECT_TIMEOUT_MILLIS,
-            )
+            // Android 9's LocalSocket.connect(address, timeout) is a stub that throws
+            // UnsupportedOperationException; only the no-timeout overload reaches the socket.
+            serial.connect(LocalSocketAddress("goc_serial", LocalSocketAddress.Namespace.RESERVED))
             val controlOutput = serial.outputStream
             serialOutput = controlOutput
             drainControlSocket(serial.inputStream)
@@ -37,10 +35,7 @@ internal object EcarxE02BluetoothBridge {
             controlOutput.write(EcarxE02BluetoothProtocol.connectCommand(canonicalAddress).toByteArray(Charsets.US_ASCII))
             controlOutput.flush()
 
-            spp.connect(
-                LocalSocketAddress("goc_spp", LocalSocketAddress.Namespace.RESERVED),
-                SOCKET_CONNECT_TIMEOUT_MILLIS,
-            )
+            spp.connect(LocalSocketAddress("goc_spp", LocalSocketAddress.Namespace.RESERVED))
             val input = spp.inputStream
             val output = spp.outputStream
             output.write(EcarxE02BluetoothProtocol.socketHandshake(canonicalAddress))
