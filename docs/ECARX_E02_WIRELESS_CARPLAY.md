@@ -308,7 +308,9 @@ from the APK assets, but every hotspot setting must be entered again.
 ### 7.1 Car hotspot
 
 Use the car's own hotspot (`WirelessHotspotMode.MANUAL`) and enter its details
-in DiPlay exactly:
+in DiPlay exactly. On the reference unit a Magisk module forces the car hotspot
+on at boot, so DiPlay only consumes it; without that module every cold start
+needs the hotspot switched on by hand.
 
 - SSID is **case-sensitive**. On the reference unit the real SSID was
   `ProtonWiFi_131861` while DiPlay had saved `ProtonWifi_131861`; the iPhone
