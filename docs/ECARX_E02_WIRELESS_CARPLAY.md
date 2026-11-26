@@ -7,22 +7,52 @@ board `IHU524P`, Android 9 / API 28, Mediatek MT6771, firmware build
 This describes how DiPlay boots iAP2 wireless CarPlay over the vendor Bluetooth
 stack when Android's Bluetooth adapter never turns on.
 
+The Bluetooth findings come from a bench S70 head unit (ECarX E02, MT6771)
+inspected over UART with root; the CarPlay path was verified on the reference
+`ecarx SS11R` unit above.
+
 ---
 
 ## 1. Why the normal Android Bluetooth path cannot work
+
+Hardware: MediaTek MT6771 with one combo radio for Wi-Fi, GPS and Bluetooth.
+The Bluetooth side has one single-open door, `/dev/stpbt`.
 
 Two Bluetooth stacks exist on the unit:
 
 | Stack | State |
 |---|---|
-| Android AOSP (`com.android.bluetooth`, `IBluetoothManager`) | installed, adapter `STATE_OFF`, never enabled |
-| Vendor stack (`/system/bin/gocsdk` + `com.nforetek.bt`) | owns `/dev/stpbt`, carries calls and music |
+| Android AOSP (`com.android.bluetooth`, `IBluetoothManager`) | installed, service registered, adapter `STATE_OFF`, never enabled |
+| Vendor stack (`/system/bin/gocsdk` + `com.nforetek.bt`, `com.neusoft.geely.btphone.nf`, `com.malaysia.btphone`) | owns `/dev/stpbt`, carries calls and music |
 
-Observed facts:
+### 1.1 Bench evidence (UART root shell)
 
-- `/dev/stpbt` is held by `gocsdk` from boot; it is single-open.
-- `svc bluetooth enable` loops: `BLE_TURNING_ON` → `BLE_START_TIMEOUT` → off.
-- The vendor daemon performs the chip power-on/firmware load itself.
+| Probe | Result |
+|---|---|
+| `pm list packages \| grep bluetooth` | `com.android.bluetooth` present |
+| `service list \| grep -i bluetooth` | `bluetooth_manager: [android.bluetooth.IBluetoothManager]` |
+| `dumpsys bluetooth_manager` | `enabled: false`, `state: OFF`, `Bluetooth never enabled!` |
+| `svc bluetooth enable` | loops `BLE_TURNING_ON` → `BLE_START_TIMEOUT` (~14 s) → `OFF`, restarts |
+| process holding `/dev/stpbt` | `/system/bin/gocsdk`, single holder |
+| stop `gocsdk`, retry enable | same timeout; `dmesg` shows GPS STP traffic, no `WMT`/`btmtk`/BT power-on |
+| vendor HAL and firmware | `android.hardware.bluetooth@1.0-service-mediatek`, `...-impl-mediatek.so`, `ROMv4_be_patch_*.bin`, `WMT_SOC.cfg` all present |
+
+Two walls, in order:
+
+1. `gocsdk` opens `/dev/stpbt` at boot and never releases it, so AOSP cannot
+   open the door.
+2. Even with `gocsdk` stopped and the door free, AOSP still cannot power the
+   chip or load its firmware. That sequence lives in the vendor stack. The
+   Android HAL and firmware are present but not wired to this chip's power-on
+   path.
+
+Reviving AOSP Bluetooth therefore needs the vendor power-on/firmware sequence
+reverse engineered; it is not a permission or service tweak. One radio also
+means the vendor stack and AOSP cannot run at the same time, so the best case
+would be switching between them.
+
+### 1.2 Vendor link facts
+
 - `/dev/socket/goc_serial`, `/dev/goc_serial` do **not** exist.
 - `/data/goc/goc_serial` exists as a **symlink to a pty** (for example
   `/dev/pts/0`). Mode `666`, owner `root`. `gocsdk` holds the pty master, the
@@ -266,7 +296,10 @@ Install over the previous build with the same signing key:
 pm install -r -d /data/local/tmp/mobile-debug.apk
 ```
 
-Do not uninstall; settings and the provisioned identity live in app data.
+Do not uninstall; settings and the provisioned identity live in app data. An
+uninstall wipes the hotspot SSID/passphrase/channel, mode, family preference,
+saved phone and MFi identity directory. A reinstall re-provisions the identity
+from the APK assets, but every hotspot setting must be entered again.
 
 ---
 
@@ -283,8 +316,9 @@ in DiPlay exactly:
   `/data/vendor/wifi/hostapd/hostapd_ap0.conf` (`ssid2` is hex) or the car UI.
 - Passphrase must match `wpa_passphrase`.
 - Channel on the reference unit is 11 (2.4 GHz, 20 MHz); store the same channel.
-- Keep `hotspot_address_family` at `IPv4`. The app flips it to `IPv6` after a
-  first-TCP timeout; on E02 only link-local IPv6 exists and that attempt fails.
+- Keep `hotspot_address_family` at `IPv4`. The vendor Bluetooth path ignores a
+  stored IPv6 and selects the hotspot IPv4 (`e6b69a71`); other units still fall
+  back to link-local IPv6 after a first-TCP timeout.
 - The hotspot must stay on while DiPlay connects.
 
 ### 7.2 iPhone
@@ -384,8 +418,9 @@ cat /data/vendor/wifi/hostapd/hostapd_ap0.conf
 9. **`NfServiceSpp.reqSppConnect` is unusable** for CarPlay: it sends an empty
    UUID.
 10. **SSID case matters.** A one-character case difference prevents association.
-11. **The address-family preference flips to IPv6** after 30 s without TCP; on
-    E02 that is a dead end. Reset to IPv4 when retesting.
+11. **The address-family preference used to flip to IPv6** after 30 s without
+    TCP. The vendor path now ignores that preference and suppresses the flip
+    (`e6b69a71`); non-vendor units still fall back to link-local IPv6.
 12. **Wi-Fi P2P crashes system_server.** Do not use it.
 13. **Source builds have no MFi identity** unless `DIPLAY_AUTH_ASSETS_DIR` is set.
 
@@ -424,8 +459,9 @@ HEVC with a software decoder is worse; check the log line:
 
 - Replace the fixed `result 8` retry latency with a connection-attempt budget
   that fails fast for the user.
-- Stop `flipWirelessAddressFamily` from choosing link-local IPv6 when it is the
-  only IPv6 candidate.
+- Reviving AOSP Bluetooth would need the vendor power-on/firmware sequence
+  reverse engineered, plus a way to hand the single radio between stacks; see
+  1.1. Not planned for app-only deployment.
 - If firmware P2P is ever patched, evaluate 5 GHz P2P for bandwidth.
 - Consider surfacing the exact vendor failure (`result 8/22/49`) in the Error
   dialog instead of a generic Bluetooth error.
