@@ -56,6 +56,16 @@ internal object HotspotAddressPolicy {
     }
 
     /**
+     * A vendor Bluetooth path bootstraps over the car hotspot and its IPv4 address.
+     * Flipping it to the link-local IPv6 alternate leaves every later attempt unusable
+     * (observed on ECarX E02: no AirPlay TCP, then every retry keeps selecting IPv6).
+     */
+    fun shouldFlipFamily(alternateFamily: String?, vendorBluetooth: Boolean): Boolean {
+        if (alternateFamily == null) return false
+        return !(vendorBluetooth && alternateFamily == FAMILY_IPV6)
+    }
+
+    /**
      * The address to publish once the listener is up: [selected] while it has a listener,
      * otherwise the best served address an iPhone can reach (#1356). Null when none is left.
      */

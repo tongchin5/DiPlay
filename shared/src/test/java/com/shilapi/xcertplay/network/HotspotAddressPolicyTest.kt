@@ -3,8 +3,10 @@ package com.shilapi.xcertplay.network
 import java.net.Inet6Address
 import java.net.InetAddress
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class HotspotAddressPolicyTest {
@@ -98,6 +100,15 @@ class HotspotAddressPolicyTest {
             HotspotAddressPolicy.FAMILY_IPV6,
             HotspotAddressPolicy.flipFamily(HotspotAddressPolicy.FAMILY_IPV4),
         )
+    }
+
+    @Test
+    fun vendorBluetoothPathNeverFlipsToLinkLocalIpv6() {
+        assertFalse(HotspotAddressPolicy.shouldFlipFamily(HotspotAddressPolicy.FAMILY_IPV6, true))
+        assertTrue(HotspotAddressPolicy.shouldFlipFamily(HotspotAddressPolicy.FAMILY_IPV6, false))
+        assertTrue(HotspotAddressPolicy.shouldFlipFamily(HotspotAddressPolicy.FAMILY_IPV4, true))
+        assertFalse(HotspotAddressPolicy.shouldFlipFamily(null, true))
+        assertFalse(HotspotAddressPolicy.shouldFlipFamily(null, false))
     }
 
     @Test

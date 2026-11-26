@@ -1529,10 +1529,17 @@ class CarPlayController(
                 if (!isStaleWirelessRun(generation)) startedHotspot?.onCarPlayConfirmed()
             }
             wirelessAirPlayHandshake.begin(generation)
-            val preferredFamily = HotspotAddressPolicy.parseFamily(
-                appContext.getSharedPreferences(WIRELESS_PREFS, Context.MODE_PRIVATE)
-                    .getString(HOTSPOT_FAMILY_PREFERENCE_KEY, null),
-            )
+            // The vendor Bluetooth path bootstraps over the car hotspot's IPv4. A stored
+            // link-local IPv6 preference (left by an earlier flip) makes CarPlay unreachable.
+            val vendorBluetoothPath = wirelessBluetoothLinkProvider != null
+            val preferredFamily = if (vendorBluetoothPath) {
+                null
+            } else {
+                HotspotAddressPolicy.parseFamily(
+                    appContext.getSharedPreferences(WIRELESS_PREFS, Context.MODE_PRIVATE)
+                        .getString(HOTSPOT_FAMILY_PREFERENCE_KEY, null),
+                )
+            }
             val addressRecovery = HotspotAddressRecovery(
                 sample = { hotspotCandidates(hotspotInfo, fallbackToSnapshot = false) },
                 cancelled = { isStaleWirelessRun(generation) },
@@ -3416,6 +3423,13 @@ class CarPlayController(
             debugLog(
                 "wireless address family flip skipped published=${from ?: "none"} " +
                     "alternate=${next != null}",
+            )
+            return@synchronized
+        }
+        if (!HotspotAddressPolicy.shouldFlipFamily(next, wirelessBluetoothLinkProvider != null)) {
+            debugLog(
+                "wireless address family flip suppressed published=$from next=$next " +
+                    "vendorBluetooth=true",
             )
             return@synchronized
         }
