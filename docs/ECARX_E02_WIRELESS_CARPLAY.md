@@ -206,10 +206,9 @@ PackageManager.getServiceInfo(
 Only then is a provider created. Every other head unit keeps the Android path
 byte-for-byte.
 
-`CarPlayController` also exposes an internal constructor taking a
-`WirelessBluetoothLinkProvider`; the default field uses
-`createIfSupported(appContext)`. `DiPlayActivity.choosePhone()` uses the same
-factory so the phone list comes from the vendor stack.
+`CarPlayController` creates the provider once in a field; there is no injection
+path. `DiPlayActivity.choosePhone()` uses the same factory so the phone list
+comes from the vendor stack.
 
 ### 5.2 Controller integration points
 

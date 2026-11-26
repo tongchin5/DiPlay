@@ -119,8 +119,11 @@ internal object EcarxE02BluetoothBridge {
     ): Pair<Endpoint, LocalSocket>? =
         endpoints.firstNotNullOfOrNull { endpoint -> connect(endpoint, onDiagnostic)?.let { endpoint to it } }
 
+    private val inventoryLogged = AtomicBoolean(false)
+
     /** Once-only evidence for the next report: which vendor node this firmware exposes. */
     private fun logSocketInventory(onDiagnostic: (String) -> Unit) {
+        if (!inventoryLogged.compareAndSet(false, true)) return
         runCatching {
             val all = File("/dev/socket").list().orEmpty()
             val entries = all.filter { it.contains("goc", ignoreCase = true) }

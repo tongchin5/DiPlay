@@ -203,20 +203,6 @@ class CarPlayController(
     private val locationProvider: Iap2LocationProvider? = null,
     private val vehicleStatusProvider: com.shilapi.xcertplay.transport.VehicleStatusProvider? = null,
 ) : Closeable {
-    internal constructor(
-        context: Context,
-        config: CarPlayRuntimeConfig,
-        airPlayConfig: AirPlayConfig,
-        identity: AirPlayIdentity,
-        pairings: PairingStore,
-        listener: AirPlaySessionListener,
-        media: AirPlayMediaHandler,
-        reportStatus: (CarPlayStatus) -> Unit,
-        wirelessBluetoothLinkProvider: WirelessBluetoothLinkProvider,
-    ) : this(context, config, airPlayConfig, identity, pairings, listener, media, reportStatus) {
-        this.wirelessBluetoothLinkProvider = wirelessBluetoothLinkProvider
-    }
-
     /** Wired restarts must not claim the iPhone while this controller still owns USB work. */
     val isWiredTransport: Boolean get() = config.transport == CarPlayTransport.WIRED
 
@@ -239,7 +225,7 @@ class CarPlayController(
 
 
     private val appContext = context.applicationContext
-    @Volatile private var wirelessBluetoothLinkProvider: WirelessBluetoothLinkProvider? =
+    private val wirelessBluetoothLinkProvider: WirelessBluetoothLinkProvider? =
         EcarxE02BluetoothLinkProvider.createIfSupported(appContext)
 
     val diagnosticAttempt = diagnosticAttempts.incrementAndGet()

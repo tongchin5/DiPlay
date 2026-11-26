@@ -28,6 +28,7 @@ class EcarxE02BluetoothLinkProvider internal constructor(
         NforetekBluetoothApi.initialize(appContext)
     }
 
+    /** The vendor exposes only its current auto-connect phone; the saved address is added as-is. */
     override fun pairedPhones(preferredAddress: String?): List<WirelessBluetoothLinkProvider.Phone> {
         val current = canonicalOrNull(metadata.currentPhoneAddress())
         val candidates = linkedMapOf<String, String?>()
@@ -47,22 +48,11 @@ class EcarxE02BluetoothLinkProvider internal constructor(
         val phones = pairedPhones(preferredAddress)
         canonicalOrNull(preferredAddress)?.let { preferred ->
             phones.firstOrNull { it.address.equals(preferred, ignoreCase = true) }?.let { return it }
-            throw ConnectionFailureException(
-                ConnectionFailureCause.CHOSEN_IPHONE_NOT_PAIRED,
-                "The selected iPhone is no longer paired. Choose it again in DiPlay.",
-            )
         }
-        return when (phones.size) {
-            1 -> phones.single()
-            0 -> throw ConnectionFailureException(
-                ConnectionFailureCause.NO_PAIRED_IPHONE,
-                "Connect your iPhone in the car's Bluetooth screen, then choose it in DiPlay.",
-            )
-            else -> throw ConnectionFailureException(
-                ConnectionFailureCause.IPHONE_NOT_CHOSEN,
-                "Several ECarX phones are available. Choose an iPhone in DiPlay.",
-            )
-        }
+        return phones.firstOrNull() ?: throw ConnectionFailureException(
+            ConnectionFailureCause.NO_PAIRED_IPHONE,
+            "Connect your iPhone in the car's Bluetooth screen, then choose it in DiPlay.",
+        )
     }
 
     override fun localAddress(): String {
