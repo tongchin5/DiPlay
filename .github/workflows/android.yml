@@ -12,6 +12,17 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+      - name: Reject unexpected executable source files
+        shell: bash
+        run: |
+          unexpected=$(git ls-files -s |
+            awk '$1 == "100755" { print $4 }' |
+            grep -vE '^(gradlew|scripts/download_count\.py)$' || true)
+          if [ -n "$unexpected" ]; then
+            echo "Unexpected executable bit on:"
+            printf '%s\n' "$unexpected"
+            exit 1
+          fi
       - name: Reject credential files in public source
         run: python3 scripts/check_public_tree.py
       - name: Restore Robolectric Android jars
