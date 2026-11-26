@@ -432,11 +432,30 @@ cat /data/vendor/wifi/hostapd/hostapd_ap0.conf
 
 Observed on the reference unit:
 
-- Hotspot: 2.4 GHz channel 11, 20 MHz, `hw_mode=g`.
-- Decode is not the bottleneck: `decode p50=6 ms`, `late=0`, `recoveries=0`.
-- The iPhone collapses video to roughly 0.05-0.4 Mbps with 1-2 s gaps, which
-  shows as softness and low frame rate.
+- Hotspot: 2.4 GHz, 20 MHz, `hw_mode=g`; the car chose channel 11 earlier
+  and channel 6 on 2026-11-26. No 5 GHz choice.
+- Decode is not the bottleneck: `decode p50=4-26 ms`, `late=0`,
+  `recoveries=0`.
+- The iPhone collapses video to roughly 0.05-0.5 Mbps with 0.4-1.8 s gaps,
+  which shows as softness and low frame rate.
 - `COMBO` chip coexistence with `tbox0` LTE traffic aggravates this.
+
+Measured 2026-11-26, 1460x548 at 76%, 30 fps, hardware decoders:
+
+| Codec | rx fps | kbps | Decode p50/p90 |
+|---|---|---|---|
+| H.264 (`OMX.MTK.VIDEO.DECODER.AVC`) | 3-22 | 79-251 | 4-7 / 6-20 ms |
+| HEVC (`OMX.MTK.VIDEO.DECODER.HEVC`) | 3.8-25.8 | 37-488 | 11-26 / 25-233 ms |
+
+Under swipes the HEVC run reached 25.8 fps with 3.1 s worst touch-to-frame;
+`late=0` throughout. HEVC is kept: hardware decode fits the 33 ms budget and
+the same bitrate carries more detail. The ceiling is about 25 fps in bursts,
+not a sustained 30 fps on 2.4 GHz.
+
+The receive trace shows the sender side, not the decoder:
+`packets=23 bytes=77228 readMaxMs=2494 interArrivalMaxMs=2494` over 5 s.
+The iPhone sent no video for up to 2.5 s, so socket reads blocked and frames
+arrived in bursts.
 
 Options:
 
@@ -444,13 +463,15 @@ Options:
    reference unit).
 2. Do not use Wi-Fi P2P until the framework NPE is patched.
 3. Settings → **Advanced** → **Video and audio**:
-   - `Efficient video (HEVC)` if a hardware HEVC decoder exists.
+   - `Efficient video (HEVC)` with the MTK hardware decoder.
    - `Direct video output (experimental)`.
    - `MTK decoder low latency (experimental)`.
    - `Low-latency decoding (experimental)`.
    - `Smooth video (experimental)` adds delay; not for latency.
 4. Lower the CarPlay resolution one step; fewer pixels at the same bitrate is
    sharper.
+5. Try the other 2.4 GHz channel (1/6/11) from the car hotspot UI or module and
+   keep the one with fewer stalls. DiPlay cannot change it.
 
 HEVC with a software decoder is worse; check the log line:
 `HEVC is on, but no hardware decoder plays it`.
